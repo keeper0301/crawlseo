@@ -34,6 +34,8 @@
     "ops:board": "npx tsx scripts/seo-ops-board.ts",
     "ops:board:crawl": "npx tsx scripts/seo-ops-board.ts --crawl",
     "ops:gsc:sync": "npx tsx scripts/gsc-operational-sync.ts --apply",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "test:ops-board": "npx tsx scripts/test-crawler-access-policy.ts && npx tsx scripts/test-gsc-sync.ts && npx tsx scripts/test-crawler-issue-detection.ts && npx tsx scripts/test-sitemap-sampling.ts && npx tsx scripts/test-ops-gsc-aggregation.ts && npx tsx scripts/test-slow-page-profiler.ts && npx tsx scripts/test-ops-url-policy.ts && npx tsx scripts/test-ops-board-rendering.ts && npx tsx scripts/test-ops-board-json-contract.ts && npx tsx scripts/test-ops-board-post-filter.ts"
   },
   "dependencies": {
@@ -65,6 +67,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.11"
   }
 }

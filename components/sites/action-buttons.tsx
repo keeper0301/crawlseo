@@ -5,20 +5,48 @@ import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+
+const PAGE_LIMIT_ITEMS = [
+  { value: "25", label: "25 pages" },
+  { value: "50", label: "50 pages" },
+  { value: "100", label: "100 pages" },
+  { value: "200", label: "200 pages" },
+  { value: "custom", label: "Custom" },
+];
+const MAX_CUSTOM_PAGES = 2000;
+const MIN_CUSTOM_PAGES = 1;
 
 export function CrawlButton({ siteId }: { siteId: string }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState(false);
+  const [limitSelection, setLimitSelection] = useState("200");
+  const [customValue, setCustomValue] = useState("");
+
+  const isCustom = limitSelection === "custom";
+  const maxPages = isCustom
+    ? Math.max(MIN_CUSTOM_PAGES, Math.min(MAX_CUSTOM_PAGES, Math.floor(Number(customValue) || 200)))
+    : Number(limitSelection);
 
   async function run() {
     setLoading(true);
     setMsg(null);
     setErr(false);
     try {
-      const res = await fetch(`/api/sites/${siteId}/crawl`, { method: "POST" });
+      const res = await fetch(`/api/sites/${siteId}/crawl`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxPages }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Crawl failed");
       setMsg(`Crawl started (ID: ${data.crawlId?.slice(0, 8)}...)`);
@@ -33,14 +61,43 @@ export function CrawlButton({ siteId }: { siteId: string }) {
 
   return (
     <div className="space-y-1">
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={loading}
-        onClick={run}
-      >
-        {loading ? "Starting…" : "Run crawl"}
-      </Button>
+      <div className="flex items-center gap-2">
+        <Select
+          value={limitSelection}
+          onValueChange={(v) => v && setLimitSelection(v)}
+          items={PAGE_LIMIT_ITEMS}
+        >
+          <SelectTrigger size="sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {PAGE_LIMIT_ITEMS.map(({ value, label }) => (
+              <SelectItem key={value} value={value}>
+                {label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {isCustom && (
+          <input
+            type="number"
+            min={MIN_CUSTOM_PAGES}
+            max={MAX_CUSTOM_PAGES}
+            placeholder="Pages"
+            value={customValue}
+            onChange={(e) => setCustomValue(e.target.value.replace(/\D/g, ""))}
+            className="h-7 w-20 rounded-lg border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+          />
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={loading || (isCustom && (!customValue || Number(customValue) < MIN_CUSTOM_PAGES))}
+          onClick={run}
+        >
+          {loading ? "Starting…" : "Run crawl"}
+        </Button>
+      </div>
       {msg && (
         <p className={cn("text-atom-caption", err ? "text-danger" : "text-signal")}>
           {msg}
