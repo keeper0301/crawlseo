@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -178,7 +178,7 @@ model RankSnapshot {
 model Crawl {
   id          String      @id @default(cuid())
   siteId      String
-  status      CrawlStatus @default(PENDING)
+  status      String      @default("PENDING")
   startedAt   DateTime?
   finishedAt  DateTime?
   pagesFound  Int         @default(0)
@@ -192,13 +192,6 @@ model Crawl {
   auditLinks  AuditLink[]
 
   @@index([siteId, startedAt])
-}
-
-enum CrawlStatus {
-  PENDING
-  RUNNING
-  COMPLETED
-  FAILED
 }
 
 // ============ AUDIT PAGE DATA ============
@@ -263,39 +256,14 @@ model CrawlIssue {
   id          String        @id @default(cuid())
   crawlId     String
   url         String
-  type        IssueType
-  severity    IssueSeverity
+  type        String
+  severity    String
   message     String
   details     Json?         // Additional context
 
   crawl       Crawl         @relation(fields: [crawlId], references: [id], onDelete: Cascade)
 
   @@index([crawlId, type])
-}
-
-enum IssueType {
-  BROKEN_LINK           // 404, 500, etc.
-  REDIRECT              // 301, 302 chains
-  MISSING_TITLE         // No <title> tag
-  MISSING_DESCRIPTION   // No meta description
-  DUPLICATE_TITLE       // Same title on multiple pages
-  DUPLICATE_DESCRIPTION // Same description on multiple pages
-  MISSING_H1            // No H1 heading
-  MULTIPLE_H1           // More than one H1
-  MISSING_ALT           // Images without alt text
-  MISSING_CANONICAL     // No canonical tag
-  MISSING_ROBOTS        // No robots.txt
-  MISSING_SITEMAP       // No sitemap.xml
-  MISSING_SCHEMA        // No structured data
-  SLOW_PAGE             // Load time > 3s
-  MIXED_CONTENT         // HTTP resources on HTTPS page
-  LARGE_PAGE            // Page size > 3MB
-}
-
-enum IssueSeverity {
-  CRITICAL
-  WARNING
-  INFO
 }
 
 // ============ CORE WEB VITALS ============
@@ -330,8 +298,8 @@ model Alert {
   id          String     @id @default(cuid())
   userId      String
   siteId      String
-  type        AlertType
-  channel     AlertChannel
+  type        String
+  channel     String
   config      Json       // Thresholds, webhook URL, etc.
   enabled     Boolean    @default(true)
   lastFired   DateTime?
@@ -341,17 +309,3 @@ model Alert {
   site        Site       @relation(fields: [siteId], references: [id], onDelete: Cascade)
 }
 
-enum AlertType {
-  TRAFFIC_DROP       // Clicks dropped > X%
-  POSITION_CHANGE    // Keyword position changed > X
-  NEW_404            // New broken links detected
-  VITALS_DEGRADED    // Core Web Vitals got worse
-  CRAWL_ISSUES       // New crawl issues detected
-}
-
-enum AlertChannel {
-  EMAIL
-  TELEGRAM
-  WEBHOOK
-  SLACK
-}

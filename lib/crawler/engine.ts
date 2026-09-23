@@ -1,18 +1,103 @@
 import { createHash } from "crypto";
+import { execFile } from "child_process";
 import { lookup } from "dns/promises";
+import { mkdtemp, rm } from "fs/promises";
+import { tmpdir } from "os";
+import path from "path";
+import { promisify } from "util";
 import { db } from "@/lib/db";
-import type { IssueSeverity, IssueType } from "@prisma/client";
 import robotsParser from "robots-parser";
 import { REMEDIATION } from "./remediation";
+import { selectRepresentativeSitemapUrls } from "./sitemap-sampling";
 
 const ABSOLUTE_MAX_PAGES = 2000;
-const BATCH_SIZE = 15;
-const BATCH_DELAY_MS = 100;
-const FETCH_TIMEOUT_MS = 12_000;
+const BATCH_SIZE = 4;
+const BATCH_DELAY_MS = 250;
+const FETCH_TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 5;
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // 10 MB
+const SLOW_PAGE_THRESHOLD_MS = 3_000;
+const SLOW_PAGE_CONFIRMATION_PROBES = 2;
+const execFileAsync = promisify(execFile);
+const CHROME_PATH = process.env.CRAWLSEO_CHROME_PATH || "/usr/bin/google-chrome";
 const USER_AGENT =
   "CrawlSEOBot/1.0 (+https://crawlseo.dev; self-hosted SEO audit)";
+const BROWSER_AUDIT_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 CrawlSEO-Audit/1.0";
+const BROWSER_UA_HOSTS = new Set(
+  (process.env.CRAWLSEO_BROWSER_UA_HOSTS || "peonchi.com")
+    .split(",")
+    .map((host) => host.trim().toLowerCase().replace(/^www\./, ""))
+    .filter(Boolean)
+);
+
+class CrawlAccessBlockedError extends Error {
+  constructor(url: string) {
+    super(`Crawl access blocked by Vercel challenge: ${url}`);
+    this.name = "CrawlAccessBlockedError";
+  }
+}
+
+export function crawlerUserAgentForUrl(url: string): string {
+  const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  return BROWSER_UA_HOSTS.has(host) ? BROWSER_AUDIT_USER_AGENT : USER_AGENT;
+}
+
+export function isVercelChallenge(status: number, mitigated: string | null): boolean {
+  return status === 429 && mitigated?.toLowerCase() === "challenge";
+}
+
+export function shouldCompareDuplicateMetadata(url: string, canonical: string | null): boolean {
+  if (!canonical) return true;
+  const normalizedCanonical = normalizeUrl(canonical, url);
+  const normalizedUrl = normalizeUrl(url, url);
+  return !normalizedCanonical || normalizedCanonical === normalizedUrl;
+}
+
+function browserFallbackAllowed(url: string): boolean {
+  const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  return BROWSER_UA_HOSTS.has(host);
+}
+
+let browserFallbackQueue: Promise<void> = Promise.resolve();
+
+async function fetchDomWithChromeNow(url: string): Promise<{ html: string; loadMs: number }> {
+  if (!browserFallbackAllowed(url)) throw new CrawlAccessBlockedError(url);
+  await assertPublicUrl(url);
+  const profileDir = await mkdtemp(path.join(tmpdir(), "crawlseo-chrome-"));
+  const started = Date.now();
+  try {
+    const { stdout } = await execFileAsync(
+      CHROME_PATH,
+      [
+        "--headless=new",
+        "--disable-gpu",
+        "--disable-background-networking",
+        "--no-first-run",
+        "--no-default-browser-check",
+        `--user-data-dir=${profileDir}`,
+        "--dump-dom",
+        url,
+      ],
+      { encoding: "utf8", timeout: 30_000, maxBuffer: MAX_RESPONSE_BYTES }
+    );
+    if (!stdout || /Vercel Security Checkpoint/i.test(stdout)) {
+      throw new CrawlAccessBlockedError(url);
+    }
+    return { html: stdout, loadMs: Date.now() - started };
+  } finally {
+    await rm(profileDir, { recursive: true, force: true });
+  }
+}
+
+async function fetchDomWithChrome(url: string): Promise<{ html: string; loadMs: number }> {
+  const queued = browserFallbackQueue.then(() => fetchDomWithChromeNow(url));
+  browserFallbackQueue = queued.then(
+    async () => { await new Promise((resolve) => setTimeout(resolve, 250)); },
+    async () => { await new Promise((resolve) => setTimeout(resolve, 250)); }
+  );
+  return queued;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Known managed-infrastructure path patterns                        */
@@ -55,8 +140,8 @@ export function matchManagedInfra(url: string): ManagedInfraPattern | null {
 
 export type IssueInput = {
   url: string;
-  type: IssueType;
-  severity: IssueSeverity;
+  type: string;
+  severity: string;
   message: string;
   details?: Record<string, unknown>;
 };
@@ -277,6 +362,39 @@ function hashText(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
 
+export function medianLoadMs(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[mid]
+    : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+}
+
+export function calibratedLoadMs(initialLoadMs: number, probeLoadMs: number[]): number {
+  return medianLoadMs([initialLoadMs, ...probeLoadMs].filter((value) => Number.isFinite(value)));
+}
+
+export function countImagesMissingAlt(html: string): number {
+  return [...html.matchAll(/<img\b[^>]*>/gi)]
+    .map((m) => m[0])
+    .filter((tag) => !/\balt\s*=/i.test(tag)).length;
+}
+
+export function hasMixedLoadedResources(html: string): boolean {
+  const loadedResourcePattern =
+    /<(?:script|img|iframe|source|video|audio|embed|object)\b[^>]*\bsrc=["']http:\/\//i;
+  const stylesheetPattern =
+    /<link\b[^>]*\brel=["'][^"']*stylesheet[^"']*["'][^>]*\bhref=["']http:\/\//i;
+  const stylesheetHrefFirstPattern =
+    /<link\b[^>]*\bhref=["']http:\/\/[^>]*\brel=["'][^"']*stylesheet[^"']*["']/i;
+  return (
+    loadedResourcePattern.test(html) ||
+    stylesheetPattern.test(html) ||
+    stylesheetHrefFirstPattern.test(html)
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Parse a fetched HTML page into a snapshot                         */
 /* ------------------------------------------------------------------ */
@@ -321,14 +439,7 @@ export function parseHtml(
   // Images
   const imgTags = tagsNamed(html, "img");
   const imageCount = imgTags.length;
-  // Only a genuinely absent alt attribute counts as missing. `alt=""` is the
-  // spec-mandated markup for a decorative image — it tells assistive tech to
-  // skip the image — so flagging it inverts the accessibility advice the issue
-  // is meant to give. A whitespace-only alt still counts as present: values are
-  // not trimmed.
-  const imagesMissingAlt = imgTags.filter(
-    (tag) => !parseAttrs(tag).has("alt")
-  ).length;
+  const imagesMissingAlt = countImagesMissingAlt(html);
 
   // Body text and word count
   const bodyText = stripTags(html);
@@ -457,6 +568,7 @@ async function fetchPage(url: string): Promise<{
   loadMs: number;
   bytes: number;
   contentType: string;
+  browserFallback: boolean;
 }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -471,10 +583,23 @@ async function fetchPage(url: string): Promise<{
         redirect: "manual",
         signal: controller.signal,
         headers: {
-          "User-Agent": USER_AGENT,
+          "User-Agent": crawlerUserAgentForUrl(currentUrl),
           Accept: "text/html,application/xhtml+xml",
+          "X-CrawlSEO-Audit": "1",
         },
       });
+      if (isVercelChallenge(res.status, res.headers.get("x-vercel-mitigated"))) {
+        const browser = await fetchDomWithChrome(currentUrl);
+        return {
+          statusCode: 200,
+          html: browser.html,
+          finalUrl: currentUrl,
+          loadMs: browser.loadMs,
+          bytes: Buffer.byteLength(browser.html),
+          contentType: "text/html; charset=utf-8",
+          browserFallback: true,
+        };
+      }
       if (res.status >= 300 && res.status < 400) {
         const location = res.headers.get("location");
         if (!location) break;
@@ -503,10 +628,25 @@ async function fetchPage(url: string): Promise<{
       loadMs: Date.now() - started,
       bytes,
       contentType,
+      browserFallback: false,
     };
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function confirmSlowPageLoadMs(url: string, initialLoadMs: number): Promise<number> {
+  if (initialLoadMs < SLOW_PAGE_THRESHOLD_MS) return initialLoadMs;
+  const probes: number[] = [];
+  for (let i = 0; i < SLOW_PAGE_CONFIRMATION_PROBES; i += 1) {
+    try {
+      const probe = await fetchPage(url);
+      probes.push(probe.loadMs);
+    } catch {
+      // Keep the original slow result if confirmation cannot be fetched.
+    }
+  }
+  return calibratedLoadMs(initialLoadMs, probes);
 }
 
 async function fetchText(url: string): Promise<string | null> {
@@ -517,14 +657,24 @@ async function fetchText(url: string): Promise<string | null> {
     try {
       const res = await fetch(url, {
         signal: controller.signal,
-        headers: { "User-Agent": USER_AGENT },
+        headers: {
+          "User-Agent": crawlerUserAgentForUrl(url),
+          Accept: "text/plain,application/xml,text/xml,*/*;q=0.8",
+          "X-CrawlSEO-Audit": "1",
+        },
       });
+      if (isVercelChallenge(res.status, res.headers.get("x-vercel-mitigated"))) {
+        const browser = await fetchDomWithChrome(url);
+        const pre = browser.html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+        return pre ? decodeEntities(stripTags(pre[1])) : browser.html;
+      }
       if (!res.ok) return null;
       return await res.text();
     } finally {
       clearTimeout(timer);
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof CrawlAccessBlockedError) throw error;
     return null;
   }
 }
@@ -545,7 +695,7 @@ function parseSitemapUrls(xml: string, base: string): string[] {
 /*  Issue detection per page                                          */
 /* ------------------------------------------------------------------ */
 
-export function issuesFromPage(page: PageSnapshot, _seedOrigin: string): IssueInput[] {
+export function issuesFromPage(page: PageSnapshot, _seedOrigin?: string): IssueInput[] {
   const issues: IssueInput[] = [];
   const { url } = page;
 
@@ -652,7 +802,7 @@ export function issuesFromPage(page: PageSnapshot, _seedOrigin: string): IssueIn
     });
   }
 
-  if (page.loadMs > 3000) {
+  if (page.loadMs > SLOW_PAGE_THRESHOLD_MS) {
     issues.push({
       url,
       type: "SLOW_PAGE",
@@ -713,7 +863,8 @@ export async function runSiteCrawl(
   siteId: string,
   domain: string,
   maxPages: number = 200,
-  existingCrawlId?: string
+  existingCrawlId?: string,
+  options: { preferredUrls?: string[] } = {}
 ): Promise<CrawlResult> {
   const effectiveMax = Math.max(1, Math.min(maxPages, ABSOLUTE_MAX_PAGES));
   const seed = domain.startsWith("http") ? domain : `https://${domain}`;
@@ -734,7 +885,14 @@ export async function runSiteCrawl(
       });
 
   try {
-    return await executeCrawl(crawl.id, siteId, seedUrl, origin, effectiveMax);
+    return await executeCrawl(
+      crawl.id,
+      siteId,
+      seedUrl,
+      origin,
+      effectiveMax,
+      options.preferredUrls ?? []
+    );
   } catch (err) {
     // Mark crawl as failed on any unhandled error
     await db.crawl
@@ -755,7 +913,8 @@ async function executeCrawl(
   _siteId: string,
   seedUrl: string,
   origin: string,
-  maxPages: number
+  maxPages: number,
+  preferredUrls: string[]
 ): Promise<CrawlResult> {
   const issues: IssueInput[] = [];
   const pages: PageSnapshot[] = [];
@@ -820,8 +979,15 @@ async function executeCrawl(
         : {},
     });
   } else {
-    // Seed queue from sitemap
-    for (const u of sitemapUrls.slice(0, 100)) {
+    // Keep bounded crawls representative instead of taking sitemap order only.
+    // The root is already queued, so reserve the remaining slots for a stable
+    // mix of GSC-priority, article, localized article, tool, and hub URLs.
+    const sitemapSeeds = selectRepresentativeSitemapUrls(
+      sitemapUrls,
+      Math.max(maxPages - 1, 0),
+      preferredUrls
+    );
+    for (const u of sitemapSeeds) {
       if (!queue.includes(u)) queue.push(u);
     }
   }
@@ -841,7 +1007,10 @@ async function executeCrawl(
       // e.g. an apex domain that redirects to www. sameHost() above already
       // confirms it's the same site, so only an explicit `false` (a real
       // Disallow match) should block the crawl here.
-      if (robotsChecker && robotsChecker.isAllowed(normalized, USER_AGENT) === false) {
+      if (
+        robotsChecker &&
+        robotsChecker.isAllowed(normalized, crawlerUserAgentForUrl(normalized)) === false
+      ) {
         visited.add(normalized);
         continue;
       }
@@ -869,6 +1038,7 @@ async function executeCrawl(
       const { url, res, error } = result.value;
 
       if (error || !res) {
+        if (error instanceof CrawlAccessBlockedError) throw error;
         const infra = matchManagedInfra(url);
         if (infra) {
           issues.push({
@@ -878,9 +1048,9 @@ async function executeCrawl(
             message: `Managed infra endpoint (${infra.provider}) — expected, not a broken link`,
             details: {
               provider: infra.provider,
-              ...REMEDIATION.MANAGED_INFRA
+              ...(REMEDIATION.MANAGED_INFRA
                 ? { howToFix: REMEDIATION.MANAGED_INFRA.howToFix }
-                : {},
+                : {}),
             },
           });
         } else {
@@ -913,11 +1083,16 @@ async function executeCrawl(
         visited.add(finalNormalized);
       }
 
+      // Headless browser startup dominates the fallback timing, so it is not a
+      // valid page-speed sample and must not trigger repeated slow-page probes.
+      const calibratedMs = res.browserFallback
+        ? 0
+        : await confirmSlowPageLoadMs(finalNormalized, res.loadMs);
       const page = parseHtml(
         finalNormalized,
         res.html,
         res.statusCode,
-        res.loadMs,
+        calibratedMs,
         res.bytes,
         redirectUrl,
         seedUrl
@@ -926,7 +1101,7 @@ async function executeCrawl(
       // Mixed content check on raw HTML
       if (
         page.url.startsWith("https://") &&
-        /(?:src|href)\s*=\s*["']?http:\/\//i.test(res.html)
+        hasMixedLoadedResources(res.html)
       ) {
         issues.push({
           url: page.url,
@@ -939,7 +1114,7 @@ async function executeCrawl(
 
       pages.push(page);
       allLinks.push(...page.links);
-      issues.push(...issuesFromPage(page, origin));
+      issues.push(...issuesFromPage(page));
 
       // Enqueue discovered internal links
       for (const link of page.internalOutlinks) {
@@ -959,6 +1134,10 @@ async function executeCrawl(
   const byTitle = new Map<string, string[]>();
   const byDesc = new Map<string, string[]>();
   for (const p of pages) {
+    // A non-self canonical intentionally consolidates this URL into another page.
+    // Chrome fallback cannot expose the final navigation URL, so use the rendered
+    // canonical to keep legacy redirects from creating phantom duplicates.
+    if (!shouldCompareDuplicateMetadata(p.url, p.canonical)) continue;
     if (p.title) {
       const list = byTitle.get(p.title) || [];
       list.push(p.url);
@@ -1133,8 +1312,8 @@ async function executeCrawl(
       data: thin.slice(0, 50).map((p) => ({
         crawlId,
         url: p.url,
-        type: "MISSING_DESCRIPTION" as IssueType,
-        severity: "INFO" as IssueSeverity,
+        type: "MISSING_DESCRIPTION",
+        severity: "INFO",
         message: `On-page content score ${p.contentScore}/100 (${p.wordCount} words)`,
         details: {
           kind: "content_score",

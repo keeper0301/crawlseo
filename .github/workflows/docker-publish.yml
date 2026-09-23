@@ -59,7 +59,7 @@ jobs:
       # A green build is not a bootable image: issue #27 shipped an image
       # whose `prisma migrate deploy` crashed on missing modules before
       # server.js ever ran, and CI never noticed because it only built.
-      # These steps load the amd64 image, boot it against a scratch Postgres
+      # These steps load the amd64 image, boot it against a scratch SQLite DB
       # and require /api/health to answer BEFORE anything is pushed.
       - name: Build image for boot test (amd64)
         uses: docker/build-push-action@v7
@@ -74,19 +74,11 @@ jobs:
       - name: Boot smoke test
         run: |
           set -euo pipefail
-          docker network create smoke
-          docker run -d --name smoke-db --network smoke \
-            -e POSTGRES_USER=crawlseo -e POSTGRES_PASSWORD=smoke -e POSTGRES_DB=crawlseo \
-            postgres:16-alpine
-          for i in $(seq 1 30); do
-            docker exec smoke-db pg_isready -U crawlseo >/dev/null 2>&1 && break
-            sleep 1
-          done
-          # The image's CMD runs `prisma migrate deploy` before server.js, so
-          # a 200 from /api/health proves: modules resolve, migrations apply,
+          # The image's CMD runs `prisma db push` before server.js, so a 200
+          # from /api/health proves: modules resolve, the schema applies,
           # the server starts, and it reaches the database.
-          docker run -d --name smoke-app --network smoke -p 3000:3000 \
-            -e DATABASE_URL=postgresql://crawlseo:smoke@smoke-db:5432/crawlseo \
+          docker run -d --name smoke-app -p 3000:3000 \
+            -e DATABASE_URL=file:/data/smoke.db \
             -e NEXTAUTH_SECRET=smoke-test-only \
             -e NEXTAUTH_URL=http://localhost:3000 \
             crawlseo-smoke:${{ github.sha }}

@@ -33,13 +33,8 @@ export default async function CrawlPage({ params }: Props) {
     orderBy: { finishedAt: "desc" },
     include: {
       issues: {
-        where: {
-          NOT: {
-            details: { path: ["kind"], equals: "crawl_summary" },
-          },
-        },
         orderBy: [{ severity: "asc" }, { type: "asc" }],
-        take: 200,
+        take: 300,
       },
     },
   });

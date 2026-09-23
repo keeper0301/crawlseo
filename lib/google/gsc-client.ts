@@ -10,7 +10,7 @@ interface GSCProperty {
   permissionLevel: string;
 }
 
-interface SearchAnalyticsRow {
+export interface SearchAnalyticsRow {
   keys: string[];
   clicks: number;
   impressions: number;
@@ -24,6 +24,27 @@ export type GSCFilter = {
   expression: string;
 };
 
+
+export function mapSearchAnalyticsRow(
+  row: SearchAnalyticsRow,
+  dimensions: string[],
+  fallbackDate: string
+): KeywordData {
+  const keyed = Object.fromEntries(
+    dimensions.map((dimension, index) => [dimension, row.keys[index]])
+  ) as Record<string, string | undefined>;
+  return {
+    query: keyed.query ?? "",
+    page: keyed.page,
+    device: keyed.device,
+    country: keyed.country,
+    clicks: row.clicks,
+    impressions: row.impressions,
+    ctr: Number(row.ctr.toFixed(4)),
+    position: Number(row.position.toFixed(2)),
+    date: keyed.date ?? fallbackDate,
+  };
+}
 
 /**
  * Lists all Google Search Console properties for a user
@@ -107,21 +128,11 @@ export async function fetchSearchAnalytics(
       break;
     }
 
-    // Parse rows and map to KeywordData
+    // Parse rows according to the requested dimension order. GSC returns keys
+    // in exactly that order; positional destructuring against a fixed five-
+    // dimension shape corrupts dates when callers request an aggregate view.
     for (const row of data.rows) {
-      const [query, page, date, device, country] = row.keys;
-
-      results.push({
-        query,
-        page,
-        device,
-        country,
-        clicks: row.clicks,
-        impressions: row.impressions,
-        ctr: Number(row.ctr.toFixed(4)),
-        position: Number(row.position.toFixed(2)),
-        date,
-      });
+      results.push(mapSearchAnalyticsRow(row, dimensions, endDate));
     }
 
 

@@ -45,3 +45,9 @@ next-env.d.ts
 
 # launch drafts (local only)
 docs/launch/
+
+# local operational state and generated evidence
+/prisma/*.db
+/prisma/*.db-*
+/reports/
+*.backup

@@ -27,8 +27,16 @@
     "mcp": "npx tsx mcp/server.ts",
     "seed:demo": "npx tsx scripts/seed-demo.ts",
     "seed:demo:clean": "npx tsx scripts/seed-demo.ts --clean",
+    "seed:ops": "npx tsx scripts/seed-operational-sites.ts",
+    "crawl:ops": "npx tsx scripts/crawl-operational-sites.ts",
+    "mcp:smoke": "npx tsx scripts/mcp-smoke.ts",
+    "mcp:smoke:ops": "npx tsx scripts/mcp-operational-smoke.ts",
+    "ops:board": "npx tsx scripts/seo-ops-board.ts",
+    "ops:board:crawl": "npx tsx scripts/seo-ops-board.ts --crawl",
+    "ops:gsc:sync": "npx tsx scripts/gsc-operational-sync.ts --apply",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:ops-board": "npx tsx scripts/test-crawler-access-policy.ts && npx tsx scripts/test-gsc-sync.ts && npx tsx scripts/test-crawler-issue-detection.ts && npx tsx scripts/test-sitemap-sampling.ts && npx tsx scripts/test-ops-gsc-aggregation.ts && npx tsx scripts/test-slow-page-profiler.ts && npx tsx scripts/test-ops-url-policy.ts && npx tsx scripts/test-ops-board-rendering.ts && npx tsx scripts/test-ops-board-json-contract.ts && npx tsx scripts/test-ops-board-post-filter.ts"
   },
   "dependencies": {
     "@auth/core": "^0.41.0",

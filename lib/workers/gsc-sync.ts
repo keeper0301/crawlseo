@@ -44,8 +44,8 @@ export async function syncGSCDataForSite(
     const { start } = getDateRange(daysBack);
     const end = getDataLagDate();
 
-    console.log(`[GSC Sync] Starting sync for site ${siteId}`);
-    console.log(`[GSC Sync] Date range: ${start} to ${end}`);
+    console.error(`[GSC Sync] Starting sync for site ${siteId}`);
+    console.error(`[GSC Sync] Date range: ${start} to ${end}`);
 
     // Fetch keywords and pages in parallel
     const [keywords, pages] = await Promise.all([
@@ -54,12 +54,16 @@ export async function syncGSCDataForSite(
         site.gscProperty,
         start,
         end,
-        ["query", "page", "date", "device", "country"]
+        // Keyword rows are persisted with the unique key
+        // (siteId, query, date). Keep the GSC dimensions aligned with that
+        // schema so page/device/country variants cannot overwrite each other
+        // while inflating the inserted count.
+        ["query", "date"]
       ),
       fetchPageAnalytics(userId, site.gscProperty, start, end),
     ]);
 
-    console.log(
+    console.error(
       `[GSC Sync] Fetched ${keywords.length} keyword records and ${pages.length} page records`
     );
 
@@ -147,7 +151,7 @@ export async function syncGSCDataForSite(
       }
     }
 
-    console.log(
+    console.error(
       `[GSC Sync] Sync completed: ${keywordsInserted} keywords, ${pagesInserted} pages`
     );
 
