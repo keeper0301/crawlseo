@@ -39,16 +39,16 @@
     "test:ops-board": "npx tsx scripts/test-crawler-access-policy.ts && npx tsx scripts/test-gsc-sync.ts && npx tsx scripts/test-crawler-issue-detection.ts && npx tsx scripts/test-sitemap-sampling.ts && npx tsx scripts/test-ops-gsc-aggregation.ts && npx tsx scripts/test-slow-page-profiler.ts && npx tsx scripts/test-ops-url-policy.ts && npx tsx scripts/test-ops-board-rendering.ts && npx tsx scripts/test-ops-board-json-contract.ts && npx tsx scripts/test-ops-board-post-filter.ts"
   },
   "dependencies": {
-    "@auth/core": "^0.41.0",
-    "@auth/prisma-adapter": "^2.11.1",
+    "@auth/core": "^0.41.3",
+    "@auth/prisma-adapter": "^2.11.3",
     "@base-ui/react": "^1.3.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/client": "^6.19.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^1.7.0",
-    "next": "16.2.2",
-    "next-auth": "^5.0.0-beta.30",
+    "next": "^16.3.6",
+    "next-auth": "^5.0.0-beta.32",
     "prisma": "^6.19.3",
     "react": "19.2.4",
     "react-dom": "19.2.4",
@@ -65,9 +65,12 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.2",
+    "eslint-config-next": "^16.3.6",
     "tailwindcss": "^4",
     "typescript": "^5",
     "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.2"
   }
 }
