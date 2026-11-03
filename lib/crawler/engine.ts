@@ -9,6 +9,7 @@ import { db } from "@/lib/db";
 import robotsParser from "robots-parser";
 import { REMEDIATION } from "./remediation";
 import { selectRepresentativeSitemapUrls } from "./sitemap-sampling";
+import { extraCoverageSitemaps, mergeSitemapCoverage, sitemapCoverageKey } from "./extra-sitemap-coverage";
 
 const ABSOLUTE_MAX_PAGES = 2000;
 const BATCH_SIZE = 4;
@@ -992,6 +993,22 @@ async function executeCrawl(
     }
   }
 
+  // A separately submitted sitemap can contain categories absent from the
+  // robots-declared posts-only XML. Use it only for coverage, never as page
+  // seeds; keep the same crawl sample and fail closed if the XML is missing.
+  let coverageSitemapUrls = sitemapUrls;
+  if (sitemapUrls.length > 0) {
+    for (const extra of extraCoverageSitemaps(_siteId, origin)) {
+      const xml = await fetchText(extra);
+      if (!xml || !/<urlset(?:\s|>)/i.test(xml)) continue;
+      coverageSitemapUrls = mergeSitemapCoverage(
+        coverageSitemapUrls,
+        parseSitemapUrls(xml, origin).filter((url) => sameHost(url, seedUrl)).slice(0, 500),
+        origin
+      );
+    }
+  }
+
   /* ---- Crawl loop with batch concurrency ---- */
   while (queue.length > 0 && pages.length < maxPages) {
     // Collect the next batch of unvisited URLs
@@ -1186,9 +1203,9 @@ async function executeCrawl(
 
   /* ---- Sitemap coverage & orphan detection ---- */
   const crawledSet = new Set(pages.map((p) => p.url));
-  const sitemapSet = new Set(sitemapUrls);
+  const sitemapSet = new Set(coverageSitemapUrls.map(sitemapCoverageKey));
   const missingFromSitemap = [...crawledSet].filter(
-    (u) => sitemapSet.size > 0 && !sitemapSet.has(u)
+    (u) => sitemapSet.size > 0 && !sitemapSet.has(sitemapCoverageKey(u))
   );
 
   const inlinkCount = new Map<string, number>();
@@ -1346,7 +1363,7 @@ async function executeCrawl(
           externalOutlinks: p.externalOutlinks.length,
           inlinks: inlinkCount.get(p.url) || 0,
         })),
-        sitemapUrls: sitemapUrls.length,
+        sitemapUrls: coverageSitemapUrls.length,
         missingFromSitemap: missingFromSitemap.length,
         orphans: orphans.length,
         avgContentScore,
@@ -1375,7 +1392,7 @@ async function executeCrawl(
     pagesFound: pages.length,
     issuesFound: finalIssues,
     healthScore,
-    sitemapUrls: sitemapUrls.length,
+    sitemapUrls: coverageSitemapUrls.length,
     missingFromSitemap: missingFromSitemap.length,
     orphanCandidates: orphans.length,
     avgContentScore,
